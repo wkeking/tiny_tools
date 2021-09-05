@@ -83,11 +83,10 @@ listen_socket.bind((HOST, PORT))
 listen_socket.listen(1)
 print('Serving HTTP on port %s ...' % PORT)
 
-http_response = """
-HTTP/1.1 200 OK
+http_response = """HTTP/1.1 200 OK
+Content-Type: application/json
 
-%s
-"""
+%s"""
 REGISTRY_TIME = 30
 
 
@@ -111,6 +110,11 @@ def registry():
         time.sleep(REGISTRY_TIME)
 
 
+def log_dir_name(logDateTime):
+    time_array = time.localtime(logDateTime / 1000)
+    return time.strftime('%Y-%m-%d', time_array)
+
+
 def run_script_job(**json_body):
     glue_source = json_body['glueSource']
     job_id = str(json_body['jobId'])
@@ -123,7 +127,13 @@ def run_script_job(**json_body):
         script_file_name = job_id + '.py'
     with open(script_file_name, 'wt') as f:
         f.write(glue_source)
-    code = os.system(command + ' ' + script_file_name)
+
+    log_date_time = long(json_body['logDateTime'])
+    log_dir = log_dir_name(log_date_time)
+    if not os.path.isdir(log_dir):
+        os.mkdir(log_dir)
+    log_file = log_dir + '/' + str(json_body['logId']) + '.log'
+    code = os.system(command + ' ' + script_file_name + ' >> ' + log_file)
     print('执行脚本%s结果%s' % (job_id, code))
     JOB_THREAD_DICT[job_id] = None
     os.remove(script_file_name)
@@ -132,7 +142,7 @@ def run_script_job(**json_body):
 def client_send(connection, body):
     json_body = http_response % (json.dumps(body))
     print("返回数据%s" % json_body)
-    connection.sendall(json_body.encode("utf-8"))
+    connection.sendall(json_body.encode("utf8"))
     connection.close()
 
 
@@ -144,9 +154,9 @@ while True:
     print("监听端口%d..." % PORT)
     client_connection, client_address = listen_socket.accept()
     request_line, request_headers, request_body = RequestParser.parse_request_message(client_connection)
-    print(request_line)
-    print(request_headers)
-    print(request_body)
+    print("请求行:%s" % request_line)
+    print("请求头:%s" % request_headers)
+    print("请求体:%s" % request_body)
 
     body = {}
 
@@ -194,6 +204,7 @@ while True:
             t.start()
             JOB_THREAD_DICT[job_id] = t
             body['code'] = 200
+            body['msg'] = 'SUCCESS'
             client_send(client_connection, body)
         except Exception as e:
             print(e.message)
@@ -202,12 +213,46 @@ while True:
     elif '/kill' == http_uri:
         json_body = json.loads(request_body)
         job_id = json_body['jobId']
-        t = JOB_THREAD_DICT[job_id]
+        JOB_THREAD_DICT[job_id] = None
         print("中断任务%s" % job_id)
         body['code'] = 200
         client_send(client_connection, body)
     elif '/log' == http_uri:
-        pass
+        if not request_body:
+            content = {
+                'isEnd': True
+            }
+            body['code'] = 200
+            body['msg'] = 'SUCCESS'
+            body['content'] = content
+            client_send(client_connection, body)
+        else:
+            json_body = json.loads(request_body)
+            from_line_num = json_body['fromLineNum']
+            log_date_time = long(json_body['logDateTim'])
+            log_dir = log_dir_name(log_date_time)
+            log_file = log_dir + '/' + str(json_body['logId']) + '.log'
+            log_content = None
+            to_line_num = None
+            with open(log_file, 'rt') as f:
+                for num, line_data in enumerate(f):
+                    if from_line_num and num + 1 >= int(from_line_num):
+                        log_content = log_content + '\n' + line_data if log_content else line_data
+                        to_line_num = num + 1
+                content = {
+                    'logContent': log_content,
+                    'isEnd': True
+                }
+                if from_line_num:
+                    content['fromLineNum'] = int(from_line_num)
+                if to_line_num:
+                    content['toLineNum'] = to_line_num
+                if log_content:
+                    content['isEnd'] = False
+                body['code'] = 200
+                body['msg'] = 'SUCCESS'
+                body['content'] = content
+                client_send(client_connection, body)
     else:
         body['code'] = 500
         body['msg'] = 'uri not found.'
