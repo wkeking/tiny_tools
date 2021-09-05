@@ -11,32 +11,20 @@ __author__ = 'ha er'
 
 class RequestParser:
     _blank_line = "\r\n\r\n"
-    _buf_size = 1024
+    _buf_size = 1024 * 1024 * 10
     _line_mark = "\r\n"
     _content_length = "content-length"
 
-    def parse_request_message(client_socket):
+    @classmethod
+    def parse_request_message(cls, client_socket):
         request_line = None
         request_headers = {}
         request_body = None
-        recv_data = ''
-        while True:
-            recv_data_buf = client_socket.recv(RequestParser._buf_size)
-            if recv_data_buf == b'':
-                return request_line, request_headers, request_body
-            try:
-                recv_data_buf = recv_data_buf.decode()
-            except Exception as e:
-                recv_data_buf = recv_data_buf.decode('gbk')
-
-            recv_data += recv_data_buf
-            # 判断是否有空行，有空行说明recv_data包含请求行和请求头，不包含则进行下次读取
-            if RequestParser._blank_line in recv_data:
-                break
-
-        blank_line_index = recv_data.index(RequestParser._blank_line)
-        request_base_data = recv_data[:blank_line_index]
-        for index, line_data in enumerate(request_base_data.split(RequestParser._line_mark)):
+        recv_data_buf = client_socket.recv(cls._buf_size)
+        blank_line_index = recv_data_buf.index(cls._blank_line)
+        request_base_data = recv_data_buf[:blank_line_index]
+        request_base = request_base_data.decode()
+        for index, line_data in enumerate(request_base.split(cls._line_mark)):
             if index == 0:
                 request_line = line_data
             else:
@@ -45,27 +33,20 @@ class RequestParser:
                 key = key.strip(' ').lower()
                 value = value.strip(' ')
                 request_headers[key] = value
-        # 如果不包含content-length请求头，则没有请求体
-        if RequestParser._content_length not in request_headers.keys():
+
+        if cls._content_length not in request_headers.keys():
             return request_line, request_headers, request_body
 
-        content_length = int(request_headers[RequestParser._content_length])
-        current_body = recv_data[blank_line_index + 4:]
-        to_get_body_length = content_length - len(current_body)
-        while to_get_body_length != 0:
-            recv_data_buf = client_socket.recv(RequestParser._buf_size)
-            try:
-                recv_data_buf = recv_data_buf.decode()
-            except Exception as e:
-                recv_data_buf = recv_data_buf.decode('gbk')
-            current_body += recv_data_buf
-            to_get_body_length = to_get_body_length - len(recv_data_buf)
-
-        request_body = current_body
+        body_start_index = blank_line_index + 4
+        content_length = int(request_headers[cls._content_length])
+        request_body_data = recv_data_buf[body_start_index:body_start_index + content_length]
+        request_body = request_body_data.decode('utf-8')
         return request_line, request_headers, request_body
 
+    @classmethod
+    def get_http_method(cls, request_line):
+        return str(request_line).split(" ")[0].upper()
 
-
-
-
-
+    @classmethod
+    def get_http_uri(cls, request_line):
+        return str(request_line).split(" ")[1]
