@@ -150,6 +150,112 @@ def client_send(connection, body):
 t = Thread(target=registry)
 t.start()
 
+
+def beat(connection):
+    body = {
+        'code': 200
+    }
+    client_send(connection, body)
+
+
+def idle_beat(connection, request_body):
+    global json_body, job_id, t
+    json_body = json.loads(request_body)
+    job_id = json_body['jobId']
+    t = JOB_THREAD_DICT[job_id]
+    body = {}
+    # 如果任务未执行完则返回失败
+    if t:
+        body['code'] = 500
+        body['msg'] = 'job thread is running or has trigger queue.'
+    # 如果任务已经执行完则返回成功
+    else:
+        body['code'] = 200
+    client_send(connection, body)
+
+
+def run(connection, request_body):
+    body = {}
+    try:
+        json_body = json.loads(request_body)
+        print("执行脚本请求参数:%s" % json_body)
+        job_id = json_body['jobId']
+        glue_type = str(json_body['glueType'])
+        if not glue_type or glue_type not in ('GLUE_SHELL', 'GLUE_PYTHON'):
+            body['code'] = 500
+            body['msg'] = 'glueType["%s"] is not valid.' % glue_type
+            client_send(connection, body)
+
+        t = Thread(target=run_script_job, kwargs=json_body)
+        t.start()
+        JOB_THREAD_DICT[job_id] = t
+        body['code'] = 200
+        body['msg'] = 'SUCCESS'
+        client_send(connection, body)
+    except Exception as e:
+        print(e.message)
+        body['code'] = 500
+        client_send(connection, body)
+
+
+def kill(connection, request_body):
+    json_body = json.loads(request_body)
+    job_id = json_body['jobId']
+    JOB_THREAD_DICT[job_id] = None
+    print("中断任务%s" % job_id)
+    body = {
+        'code': 200
+    }
+    client_send(connection, body)
+
+
+def log(connection, request_body):
+    body = {}
+    if not request_body:
+        content = {
+            'isEnd': True
+        }
+        body['code'] = 200
+        body['msg'] = 'SUCCESS'
+        body['content'] = content
+        client_send(connection, body)
+    else:
+        json_body = json.loads(request_body)
+        from_line_num = json_body['fromLineNum']
+        log_date_time = long(json_body['logDateTim'])
+        log_dir = log_dir_name(log_date_time)
+        log_file = log_dir + '/' + str(json_body['logId']) + '.log'
+        log_content = None
+        to_line_num = None
+        with open(log_file, 'rt') as f:
+            for num, line_data in enumerate(f):
+                if from_line_num and num + 1 >= int(from_line_num):
+                    log_content = log_content + '\n' + line_data if log_content else line_data
+                    to_line_num = num + 1
+            content = {
+                'logContent': log_content,
+                'isEnd': True
+            }
+            if from_line_num:
+                content['fromLineNum'] = int(from_line_num)
+            if to_line_num:
+                content['toLineNum'] = to_line_num
+            if log_content:
+                content['isEnd'] = False
+            body['code'] = 200
+            body['msg'] = 'SUCCESS'
+            body['content'] = content
+            client_send(connection, body)
+
+
+def other(connection, msg):
+    body = {
+        'code': 500,
+        'msg': msg
+    }
+    client_send(connection, body)
+
+
 while True:
     print("监听端口%d..." % PORT)
     client_connection, client_address = listen_socket.accept()
@@ -158,104 +264,27 @@ while True:
     print("请求头:%s" % request_headers)
     print("请求体:%s" % request_body)
 
-    body = {}
-
     http_method = RequestParser.get_http_method(request_line)
     print("本次请求方法:%s" % http_method)
     if 'POST' != http_method:
-        body['code'] = 500
-        body['msg'] = 'invalid request, HttpMethod not support.'
-        client_send(client_connection, body)
+        other(client_connection, 'invalid request, HttpMethod not support.')
 
     http_uri = RequestParser.get_http_uri(request_line).strip(' ')
     print("本次请求URI:%s" % http_uri)
     if not http_uri:
-        body['code'] = 500
-        body['msg'] = 'invalid request, uri-mapping empty.'
-        client_send(client_connection, body)
+        other(client_connection, 'invalid request, uri-mapping empty.')
 
     if '/beat' == http_uri:
-        body['code'] = 200
-        client_send(client_connection, body)
+        beat(client_connection)
     elif '/idleBeat' == http_uri:
-        json_body = json.loads(request_body)
-        job_id = json_body['jobId']
-        t = JOB_THREAD_DICT[job_id]
-        # 如果任务未执行完则返回失败
-        if t:
-            body['code'] = 500
-            body['msg'] = 'job thread is running or has trigger queue.'
-        # 如果任务已经执行完则返回成功
-        else:
-            body['code'] = 200
-        client_send(client_connection, body)
+        idle_beat(client_connection, request_body)
     elif '/run' == http_uri:
-        try:
-            json_body = json.loads(request_body)
-            print("执行脚本请求参数:%s" % json_body)
-            job_id = json_body['jobId']
-            glue_type = str(json_body['glueType'])
-            if not glue_type or glue_type not in ('GLUE_SHELL', 'GLUE_PYTHON'):
-                body['code'] = 500
-                body['msg'] = 'glueType["%s"] is not valid.' % glue_type
-                client_send(client_connection, body)
-
-            t = Thread(target=run_script_job, kwargs=json_body)
-            t.start()
-            JOB_THREAD_DICT[job_id] = t
-            body['code'] = 200
-            body['msg'] = 'SUCCESS'
-            client_send(client_connection, body)
-        except Exception as e:
-            print(e.message)
-            body['code'] = 500
-            client_send(client_connection, body)
+        run(client_connection, request_body)
     elif '/kill' == http_uri:
-        json_body = json.loads(request_body)
-        job_id = json_body['jobId']
-        JOB_THREAD_DICT[job_id] = None
-        print("中断任务%s" % job_id)
-        body['code'] = 200
-        client_send(client_connection, body)
+        kill(client_connection, request_body)
     elif '/log' == http_uri:
-        if not request_body:
-            content = {
-                'isEnd': True
-            }
-            body['code'] = 200
-            body['msg'] = 'SUCCESS'
-            body['content'] = content
-            client_send(client_connection, body)
-        else:
-            json_body = json.loads(request_body)
-            from_line_num = json_body['fromLineNum']
-            log_date_time = long(json_body['logDateTim'])
-            log_dir = log_dir_name(log_date_time)
-            log_file = log_dir + '/' + str(json_body['logId']) + '.log'
-            log_content = None
-            to_line_num = None
-            with open(log_file, 'rt') as f:
-                for num, line_data in enumerate(f):
-                    if from_line_num and num + 1 >= int(from_line_num):
-                        log_content = log_content + '\n' + line_data if log_content else line_data
-                        to_line_num = num + 1
-                content = {
-                    'logContent': log_content,
-                    'isEnd': True
-                }
-                if from_line_num:
-                    content['fromLineNum'] = int(from_line_num)
-                if to_line_num:
-                    content['toLineNum'] = to_line_num
-                if log_content:
-                    content['isEnd'] = False
-                body['code'] = 200
-                body['msg'] = 'SUCCESS'
-                body['content'] = content
-                client_send(client_connection, body)
+        log(client_connection, request_body)
     else:
-        body['code'] = 500
-        body['msg'] = 'uri not found.'
-        client_send(client_connection, body)
+        other(client_connection, 'uri not found.')
 
 
